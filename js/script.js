@@ -16,6 +16,31 @@ themeToggle.addEventListener('click', () => {
   setTheme(next);
 });
 
+// ===== English / Thai language toggle =====
+// Every translatable element carries the exact markup for both languages in
+// data-en/data-th (not just plain text) so a handful of elements with nested
+// tags - the hero title's highlighted word, the bolded job titles - survive
+// switching back and forth with no loss.
+const langToggle = document.getElementById('langToggle');
+const langButtons = langToggle.querySelectorAll('.lang-btn');
+
+function setLanguage(lang){
+  document.documentElement.setAttribute('lang', lang);
+  document.querySelectorAll('[data-en]').forEach(el => {
+    const html = lang === 'th' ? el.dataset.th : el.dataset.en;
+    if (html !== undefined) el.innerHTML = html;
+  });
+  langButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.lang === lang));
+  langToggle.dataset.active = lang;
+  localStorage.setItem('lang', lang);
+}
+
+setLanguage(document.documentElement.getAttribute('lang') || 'en');
+
+langButtons.forEach(btn => {
+  btn.addEventListener('click', () => setLanguage(btn.dataset.lang));
+});
+
 // Mobile nav toggle
 const navToggle = document.getElementById('navToggle');
 const navLinks = document.querySelector('.nav-links');
@@ -25,6 +50,14 @@ navToggle.addEventListener('click', () => {
 navLinks.querySelectorAll('a').forEach(link => {
   link.addEventListener('click', () => navLinks.classList.remove('open'));
 });
+
+// Nav gains a solid background/blur once scrolled past the hero.
+const siteHeader = document.querySelector('.site-header');
+function updateHeaderScroll(){
+  siteHeader.classList.toggle('scrolled', window.scrollY > 40);
+}
+window.addEventListener('scroll', updateHeaderScroll, { passive: true });
+updateHeaderScroll();
 
 // ===== Portfolio grid: built from assets/img/manifest.json =====
 const CATEGORY_LABELS = {
@@ -36,40 +69,68 @@ const CATEGORY_LABELS = {
   'thumbnail': 'Thumbnail',
   'other': 'Other',
 };
-const CATEGORY_ORDER = ['banner-ads', 'infographic', 'logo', 'packaging', 'poster', 'thumbnail', 'other'];
+const CATEGORY_ORDER = ['infographic', 'banner-ads', 'logo', 'packaging', 'poster', 'thumbnail', 'other'];
 
 const portfolioGrid = document.getElementById('portfolioGrid');
 const filterBar = document.getElementById('filterBar');
 const lightbox = document.getElementById('lightbox');
 const lightboxImg = document.getElementById('lightboxImg');
-const lightboxCaption = document.getElementById('lightboxCaption');
 const lightboxClose = document.getElementById('lightboxClose');
+const lightboxPrev = document.getElementById('lightboxPrev');
+const lightboxNext = document.getElementById('lightboxNext');
+const lightboxCount = document.getElementById('lightboxCount');
+
+// The cards currently open in the lightbox (a snapshot of whatever page/
+// filter was on screen when it opened), so prev/next can step through the
+// same set the user was just browsing without re-querying mid-navigation.
+let lightboxCards = [];
+let lightboxIndex = -1;
+
+function showLightboxCard(index){
+  const card = lightboxCards[index];
+  if (!card) return;
+  lightboxIndex = index;
+  const img = card.querySelector('img');
+  lightboxImg.src = img.dataset.full || img.src;
+  lightboxImg.alt = img.alt;
+
+  const multiple = lightboxCards.length > 1;
+  lightboxPrev.style.display = multiple ? '' : 'none';
+  lightboxNext.style.display = multiple ? '' : 'none';
+  lightboxCount.textContent = multiple ? `${index + 1} / ${lightboxCards.length}` : '';
+}
 
 function openLightbox(card){
-  const img = card.querySelector('img');
-  const cat = card.querySelector('.card-cat')?.textContent || '';
-  lightboxImg.src = img.src;
-  lightboxImg.alt = img.alt;
-  lightboxCaption.textContent = cat;
+  // Cards are dealt round-robin into .grid-column tracks (see
+  // layoutMasonryColumns), so a plain DOM query would return them grouped
+  // by column instead of in the left-to-right order they're displayed in -
+  // .cardOrder (set on .grid-inner) is the real reading order to step
+  // through with prev/next.
+  const inner = card.closest('.grid-inner');
+  lightboxCards = (inner && inner.cardOrder) ? inner.cardOrder : Array.from(portfolioGrid.querySelectorAll('.card'));
+  showLightboxCard(lightboxCards.indexOf(card));
   lightbox.classList.add('open');
 }
 
 function closeLightbox(){
   lightbox.classList.remove('open');
   lightboxImg.src = '';
+  lightboxCards = [];
+  lightboxIndex = -1;
 }
 
-// The portfolio is a "horizontal masonry": cards pack left-to-right, in
-// order, into a row until the next one would overflow the width - then
-// that row is rescaled (same aspect ratios, just bigger/smaller) to land
-// exactly on the container width, and the overflowing card starts a new
-// row. Pages are built by exact content, not an estimate: cards are loaded
-// in growing batches until a full ROWS_PER_PAGE rows are actually packed
-// (or the filtered set runs out), so a page never ends up with a stray
-// extra/missing row - it's measured, not guessed. Only one page of cards
-// is in the DOM at a time; prev/next (or a swipe) slides to the next one.
-const ROWS_PER_PAGE = 5;
-const INITIAL_BATCH = 12; // cards to load+measure per growth step while filling a page
+function stepLightbox(delta){
+  if (!lightboxCards.length) return;
+  showLightboxCard((lightboxIndex + delta + lightboxCards.length) % lightboxCards.length);
+}
+
+// The portfolio grid is a uniform fixed-ratio CSS Grid (see .grid-pane /
+// .card in css/style.css) - every card is the same box regardless of the
+// source image's real aspect ratio (object-fit: cover crops it), so a page
+// is always just "the next PAGE_SIZE cards," known instantly with no image
+// loading needed first. Only one page of cards is in the DOM at a time;
+// prev/next (or a swipe) slides to the next one.
+const PAGE_SIZE = 15;
 let allCards = [];
 let currentFilter = 'all';
 let currentPage = 0;
@@ -82,118 +143,201 @@ const pagerPrev = document.getElementById('pagerPrev');
 const pagerNext = document.getElementById('pagerNext');
 const pagerCount = document.getElementById('pagerCount');
 
-function getTargetRowHeight(){
-  const w = window.innerWidth;
-  if (w <= 420) return 145;
-  if (w <= 640) return 175;
-  if (w <= 1080) return 215;
-  return 260;
-}
-
 function getVisibleCards(){
   return allCards.filter(card => currentFilter === 'all' || card.dataset.category === currentFilter);
 }
 
-function waitForImage(card){
+// Matches the .grid-column width/gap in css/style.css.
+const MASONRY_COLUMN_WIDTH = 208;
+const MASONRY_COLUMN_GAP = 28;
+
+function masonryColumnCount(){
+  const available = gridViewport.clientWidth;
+  return Math.max(1, Math.floor((available + MASONRY_COLUMN_GAP) / (MASONRY_COLUMN_WIDTH + MASONRY_COLUMN_GAP)));
+}
+
+// Builds N `.grid-column` tracks inside a `.grid-columns-row` and deals as
+// many full rows of `cards` into them round-robin (card 0 -> column 0, card
+// 1 -> column 1, ... card N -> column 0 again) as divide evenly. Leftover
+// cards that don't fill a full row are placed one of two ways:
+//  - Columns about equal in height (uniform images - reads as a plain grid):
+//    a separate `.grid-tail-row` below, flex-centered inside `inner`'s width,
+//    so the short last row sits exactly centered under the full rows.
+//  - Columns uneven (mixed tall/short images): that separate row could only
+//    start below the TALLEST column, leaving a big empty gap under every
+//    shorter one. Instead the leftovers go straight into the middle columns,
+//    packed directly under the cards above like the rest of the masonry.
+// Column heights come from each image's real proportions, so they're only
+// known once images have loaded - relayoutPane() re-runs this then.
+//
+// This used to be CSS `column-width` with the browser deciding both the
+// column count (via column-fill:balance) and the reading order. Two
+// problems came from that: balance reads column-by-column (finishes column
+// 1 top-to-bottom before starting column 2) instead of left-to-right row by
+// row like the manifest's real order: and for content that balances equally
+// well multiple ways, the actual column count it picked wasn't stable
+// between renders. Deciding the column count ourselves and building the
+// columns explicitly fixes both - the order is exactly what round-robin
+// assignment produces, and there's no browser balancing decision left to be
+// unstable about. `inner.cardOrder` records the assignment order so the
+// lightbox can step through cards in the same left-to-right sequence
+// instead of DOM order (which is now grouped by column, not by row).
+//
+// When every card fits within a single row (a small category like Logo or
+// Poster), reserving the full ideal column count would leave a column
+// entirely empty - e.g. 4 cards in 5 reserved columns - and centering 4
+// columns' worth of content inside a 5-column-wide block isn't centering on
+// screen at all. Capping columns to the card count in that case means
+// there's no reserved empty column to begin with (and no tail row either,
+// since `cards.length` then divides evenly by `cols`), so the block's own
+// width matches its content and .grid-pane's flex centering centers it
+// exactly.
+// Rendered height of a card at column width, from its image's real
+// proportions - null until the image has loaded (or if it failed to).
+function cardHeight(card){
   const img = card.querySelector('img');
-  if (img.complete && img.naturalWidth) return Promise.resolve();
-  return new Promise(resolve => {
-    img.addEventListener('load', resolve, { once: true });
-    img.addEventListener('error', resolve, { once: true });
-  });
+  if (!img || !img.complete || !img.naturalWidth) return null;
+  return MASONRY_COLUMN_WIDTH * img.naturalHeight / img.naturalWidth;
 }
 
-// Packs already-measured {card, ratio} items into rows left-to-right, in
-// order, stopping as soon as `maxRows` full rows exist. Returns the rows
-// built and how many items were actually consumed - anything left over
-// (because it would have started row maxRows+1) is not consumed, so the
-// caller can carry it into the next page instead of dropping it.
-function packRows(items, maxRows){
-  const rowHeight = getTargetRowHeight();
-  const containerWidth = gridViewport.clientWidth;
-  const rows = [];
-  let row = [];
-  let rowRatioSum = 0;
-  let consumed = 0;
+function relayoutPane(pane){
+  const inner = pane.querySelector('.grid-inner');
+  if (inner && inner.cardOrder) layoutMasonryColumns(inner, inner.cardOrder);
+}
 
-  for (let i = 0; i < items.length; i++){
-    const item = items[i];
-    if (rowRatioSum > 0 && (rowRatioSum + item.ratio) * rowHeight > containerWidth){
-      rows.push(row);
-      consumed = i;
-      if (rows.length >= maxRows) return { rows, consumed };
-      row = [];
-      rowRatioSum = 0;
-    }
-    row.push(item);
-    rowRatioSum += item.ratio;
+function layoutMasonryColumns(inner, cards){
+  const idealCols = masonryColumnCount();
+  const cols = Math.max(1, Math.min(idealCols, cards.length));
+  inner.innerHTML = '';
+
+  const mainCount = Math.floor(cards.length / cols) * cols;
+  const mainCards = cards.slice(0, mainCount);
+  const tailCards = cards.slice(mainCount);
+
+  const columnsRow = document.createElement('div');
+  columnsRow.className = 'grid-columns-row';
+  const columns = [];
+  for (let i = 0; i < cols; i++){
+    const col = document.createElement('div');
+    col.className = 'grid-column';
+    columns.push(col);
+    columnsRow.appendChild(col);
   }
-  if (row.length) rows.push(row);
-  return { rows, consumed: items.length };
-}
+  mainCards.forEach((card, i) => columns[i % cols].appendChild(card));
+  inner.appendChild(columnsRow);
 
-function renderRowsToPane(rows){
-  const containerWidth = gridViewport.clientWidth;
-  const maxHeight = getTargetRowHeight() * 1.35;
-  const pane = document.createElement('div');
-  pane.className = 'grid-pane';
-
-  rows.forEach(row => {
-    const rowRatioSum = row.reduce((sum, item) => sum + item.ratio, 0);
-    // A trailing row with only one or two leftover cards needs very little
-    // width at the target height, so stretching it edge-to-edge would blow
-    // it up far taller than every other row. Cap the stretch instead - that
-    // row just won't quite reach the right edge, which reads much better
-    // than one oversized row at the bottom of the page.
-    const finalHeight = Math.min(containerWidth / rowRatioSum, maxHeight);
-    const rowEl = document.createElement('div');
-    rowEl.className = 'justified-row';
-    row.forEach(({ card, ratio }) => {
-      card.style.width = `${ratio * finalHeight}px`;
-      card.style.height = `${finalHeight}px`;
-      rowEl.appendChild(card);
-    });
-    pane.appendChild(rowEl);
+  const colHeights = columns.map(col => {
+    const heights = Array.from(col.children).map(cardHeight);
+    if (heights.includes(null)) return null;
+    return heights.reduce((a, b) => a + b, 0) + MASONRY_COLUMN_GAP * (heights.length - 1);
   });
-  return pane;
+  const columnsEven = !colHeights.includes(null) &&
+    Math.max(...colHeights) - Math.min(...colHeights) <= MASONRY_COLUMN_GAP;
+
+  if (tailCards.length && !columnsEven){
+    const offset = Math.floor((cols - tailCards.length) / 2);
+    tailCards.forEach((card, i) => columns[offset + i].appendChild(card));
+  } else if (tailCards.length){
+    const tailRow = document.createElement('div');
+    tailRow.className = 'grid-tail-row';
+    tailCards.forEach(card => {
+      const col = document.createElement('div');
+      col.className = 'grid-column';
+      col.appendChild(card);
+      tailRow.appendChild(col);
+    });
+    inner.appendChild(tailRow);
+  }
+
+  inner.style.width = `${cols * MASONRY_COLUMN_WIDTH + (cols - 1) * MASONRY_COLUMN_GAP}px`;
+  inner.cardOrder = cards;
 }
 
 // Builds one off-DOM page pane starting at `startIndex` in the filtered
-// list. Loads (and measures) cards in growing batches until ROWS_PER_PAGE
-// rows are actually packed, or the filtered list runs out - never guesses
-// how many cards that will take.
+// list. The src is only assigned here, the moment a card is actually about
+// to be shown - not when the card is created - so the browser doesn't start
+// downloading all ~1000+ portfolio images at once on first load.
 function buildPageFromIndex(startIndex){
   const visible = getVisibleCards();
   if (startIndex >= visible.length) return Promise.resolve(null);
 
-  const grow = (batchSize) => {
-    const batchEnd = Math.min(startIndex + batchSize, visible.length);
-    const batch = visible.slice(startIndex, batchEnd);
-    return Promise.all(batch.map(waitForImage)).then(() => {
-      const items = batch.map(card => {
-        const img = card.querySelector('img');
-        const ratio = (img.naturalWidth && img.naturalHeight) ? img.naturalWidth / img.naturalHeight : 1;
-        return { card, ratio };
-      });
-      const { rows, consumed } = packRows(items, ROWS_PER_PAGE);
-      const reachedEnd = batchEnd >= visible.length;
+  const batchEnd = Math.min(startIndex + PAGE_SIZE, visible.length);
+  const batch = visible.slice(startIndex, batchEnd);
 
-      if (rows.length >= ROWS_PER_PAGE || reachedEnd){
-        const nextIndex = startIndex + consumed;
-        return { pane: renderRowsToPane(rows), nextIndex, isLastPage: nextIndex >= visible.length };
-      }
-      return grow(batchSize + INITIAL_BATCH);
-    });
-  };
+  const pane = document.createElement('div');
+  pane.className = 'grid-pane';
+  const inner = document.createElement('div');
+  inner.className = 'grid-inner';
+  batch.forEach(card => {
+    const img = card.querySelector('img');
+    if (!img.src) img.src = img.dataset.src;
+  });
+  layoutMasonryColumns(inner, batch);
+  pane.appendChild(inner);
 
-  return grow(INITIAL_BATCH);
+  return Promise.resolve({ pane, nextIndex: batchEnd, isLastPage: batchEnd >= visible.length });
 }
+
+// `.card img` has no explicit aspect-ratio (that's the whole point of the
+// masonry layout - it uses the image's real proportions), which means an
+// image with no dimensions yet (still downloading) renders at 0 height, and
+// so does the `.card` around it. Swapping in a page of unloaded images
+// straight away - which is what used to happen - makes the grid collapse to
+// a sliver for however long the images take to arrive over the network,
+// then "pop" to full size all at once. Waiting for the batch to finish
+// loading before revealing it keeps the skeleton (which has real, fixed
+// heights) on screen for that entire window instead.
+// `img.complete` (not naturalWidth) is what to check - naturalWidth stays 0
+// forever on a broken/404 image, so checking it here would wait forever for
+// a page that includes one; `complete` becomes true either way.
+function waitForImages(pane){
+  const imgs = Array.from(pane.querySelectorAll('img'));
+  return Promise.all(imgs.map(img => {
+    if (img.complete) return Promise.resolve();
+    return new Promise(resolve => {
+      img.addEventListener('load', resolve, { once: true });
+      img.addEventListener('error', resolve, { once: true });
+    });
+  }));
+}
+
+// Fades + lifts each card into place with a small per-card stagger, so a
+// fresh page reads as one flowing entrance instead of popping in at once.
+function playEnterAnimation(pane){
+  const cards = pane.querySelectorAll('.card');
+  cards.forEach((card, i) => {
+    card.classList.add('card-enter');
+    card.style.transitionDelay = `${Math.min(i, 20) * 35}ms`;
+  });
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      cards.forEach(card => card.classList.add('card-enter-active'));
+    });
+  });
+  const cleanup = (card) => {
+    card.classList.remove('card-enter', 'card-enter-active');
+    card.style.transitionDelay = '';
+  };
+  cards.forEach(card => {
+    card.addEventListener('transitionend', () => cleanup(card), { once: true });
+  });
+}
+
+// True while a page-slide transition is animating and hasn't finished its
+// DOM cleanup yet - see goToPage(), which uses this to ignore clicks/swipes
+// that arrive before the current transition is done.
+let pageTransitionInFlight = false;
 
 function updatePagerUI(){
   gridPager.classList.toggle('hidden', currentPage === 0 && currentPageIsLast);
   pagerCount.textContent = `${currentPage + 1}`;
-  pagerPrev.disabled = currentPage === 0;
-  pagerNext.disabled = currentPageIsLast;
+  // Leave the buttons hard-disabled while a transition is still in flight
+  // (goToPage sets that directly) - only recompute the boundary-based
+  // disabled state once nothing is animating.
+  if (!pageTransitionInFlight){
+    pagerPrev.disabled = currentPage === 0;
+    pagerNext.disabled = currentPageIsLast;
+  }
 }
 
 // Full, un-animated (re)build: used for the first load, filter switches and
@@ -204,30 +348,44 @@ function renderGrid(){
   portfolioGrid.classList.toggle('filtered', currentFilter !== 'all');
 
   return buildPageFromIndex(0).then(result => {
-    portfolioGrid.classList.add('no-transition');
-    portfolioGrid.innerHTML = '';
-    portfolioGrid.style.width = '100%';
-    portfolioGrid.style.transform = 'translateX(0%)';
+    return (result ? waitForImages(result.pane) : Promise.resolve()).then(() => {
+      if (result) relayoutPane(result.pane);
+      portfolioGrid.classList.add('no-transition');
+      portfolioGrid.innerHTML = '';
+      portfolioGrid.style.width = '100%';
+      portfolioGrid.style.transform = 'translateX(0%)';
 
-    if (result){
-      pageStarts[1] = result.nextIndex;
-      currentPageIsLast = result.isLastPage;
-      result.pane.style.flex = '0 0 100%';
-      portfolioGrid.appendChild(result.pane);
-    } else {
-      currentPageIsLast = true;
-    }
+      if (result){
+        pageStarts[1] = result.nextIndex;
+        currentPageIsLast = result.isLastPage;
+        result.pane.style.flex = '0 0 100%';
+        portfolioGrid.appendChild(result.pane);
+        playEnterAnimation(result.pane);
+      } else {
+        currentPageIsLast = true;
+      }
 
-    void portfolioGrid.offsetWidth;
-    portfolioGrid.classList.remove('no-transition');
-    updatePagerUI();
+      void portfolioGrid.offsetWidth;
+      portfolioGrid.classList.remove('no-transition');
+      updatePagerUI();
+    });
   });
 }
 
 // Slides the current page out and the next/previous page in, like a
 // carousel: the incoming pane sits right beside the current one and the
 // whole track animates across by one pane-width.
+//
+// Clicking/swiping again before that finishes used to start a second
+// transition on top of the first - reassigning `transform` mid-animation
+// cancels the browser's in-progress transition, so its `transitionend`
+// (which is what removes the old pane from the DOM) never fires. Rapid
+// clicks left several stale panes stacked up in #portfolioGrid forever,
+// which is why the grid could look "stuck" even though the page counter
+// had already moved on. `pageTransitionInFlight` makes goToPage a no-op
+// until the current slide's cleanup has actually run.
 function goToPage(delta){
+  if (pageTransitionInFlight) return;
   if (delta > 0 && currentPageIsLast) return;
   if (delta < 0 && currentPage === 0) return;
 
@@ -235,49 +393,67 @@ function goToPage(delta){
   const startIndex = pageStarts[targetPage];
   if (startIndex === undefined) return;
 
+  pageTransitionInFlight = true;
+  pagerPrev.disabled = true;
+  pagerNext.disabled = true;
+
+  const releaseLock = () => {
+    pageTransitionInFlight = false;
+    updatePagerUI();
+  };
+
   buildPageFromIndex(startIndex).then(result => {
     const oldPane = portfolioGrid.firstElementChild;
-    if (!result || !oldPane){ currentPage = targetPage; renderGrid(); return; }
+    if (!result || !oldPane){ currentPage = targetPage; releaseLock(); renderGrid(); return; }
 
-    const newPane = result.pane;
-    portfolioGrid.classList.add('no-transition');
-    portfolioGrid.style.width = '200%';
-    oldPane.style.flex = '0 0 50%';
-    newPane.style.flex = '0 0 50%';
-
-    if (delta > 0){
-      portfolioGrid.appendChild(newPane);
-      portfolioGrid.style.transform = 'translateX(0%)';
-    } else {
-      portfolioGrid.insertBefore(newPane, oldPane);
-      portfolioGrid.style.transform = 'translateX(-50%)';
-    }
-    void portfolioGrid.offsetWidth;
-    portfolioGrid.classList.remove('no-transition');
-
-    requestAnimationFrame(() => {
-      portfolioGrid.style.transform = delta > 0 ? 'translateX(-50%)' : 'translateX(0%)';
-    });
-
-    currentPage = targetPage;
-    if (delta > 0) pageStarts[currentPage + 1] = result.nextIndex;
-    currentPageIsLast = result.isLastPage;
-    updatePagerUI();
-
-    const onDone = () => {
-      portfolioGrid.removeEventListener('transitionend', onDone);
+    return waitForImages(result.pane).then(() => {
+      relayoutPane(result.pane);
+      const newPane = result.pane;
       portfolioGrid.classList.add('no-transition');
-      oldPane.remove();
-      portfolioGrid.style.width = '100%';
-      newPane.style.flex = '0 0 100%';
-      portfolioGrid.style.transform = 'translateX(0%)';
+      portfolioGrid.style.width = '200%';
+      oldPane.style.flex = '0 0 50%';
+      newPane.style.flex = '0 0 50%';
+
+      if (delta > 0){
+        portfolioGrid.appendChild(newPane);
+        portfolioGrid.style.transform = 'translateX(0%)';
+      } else {
+        portfolioGrid.insertBefore(newPane, oldPane);
+        portfolioGrid.style.transform = 'translateX(-50%)';
+      }
       void portfolioGrid.offsetWidth;
       portfolioGrid.classList.remove('no-transition');
-    };
-    portfolioGrid.addEventListener('transitionend', onDone);
-  });
 
-  gridViewport.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      requestAnimationFrame(() => {
+        portfolioGrid.style.transform = delta > 0 ? 'translateX(-50%)' : 'translateX(0%)';
+      });
+
+      currentPage = targetPage;
+      if (delta > 0) pageStarts[currentPage + 1] = result.nextIndex;
+      currentPageIsLast = result.isLastPage;
+      updatePagerUI();
+
+      let settled = false;
+      const onDone = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(fallbackTimer);
+        portfolioGrid.removeEventListener('transitionend', onDone);
+        portfolioGrid.classList.add('no-transition');
+        oldPane.remove();
+        portfolioGrid.style.width = '100%';
+        newPane.style.flex = '0 0 100%';
+        portfolioGrid.style.transform = 'translateX(0%)';
+        void portfolioGrid.offsetWidth;
+        portfolioGrid.classList.remove('no-transition');
+        releaseLock();
+      };
+      portfolioGrid.addEventListener('transitionend', onDone);
+      // Safety net: if transitionend somehow never fires (e.g. the tab was
+      // backgrounded mid-animation), don't leave the pager permanently locked.
+      const fallbackTimer = setTimeout(onDone, 900);
+    });
+  });
 }
 
 pagerPrev.addEventListener('click', () => { if (!pagerPrev.disabled) goToPage(-1); });
@@ -296,41 +472,84 @@ portfolioGrid.addEventListener('touchend', (e) => {
   if (delta > 0 && !pagerPrev.disabled) goToPage(-1);
 });
 
-fetch('assets/img/manifest.json')
+// Viewport width changes can change how many columns fit - re-deal each
+// .grid-inner currently in the DOM (there are briefly two during a
+// page-slide transition) into a fresh column count, using the same
+// left-to-right order it was built with the first time.
+let resizeRaf = null;
+window.addEventListener('resize', () => {
+  if (resizeRaf) return;
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = null;
+    document.querySelectorAll('.grid-inner').forEach(inner => {
+      if (inner.cardOrder) layoutMasonryColumns(inner, inner.cardOrder);
+    });
+  });
+});
+
+// Shown immediately while the manifest + first batch of images are still
+// loading, so the section never reads as empty/broken on first paint.
+// renderGrid() below wipes portfolioGrid's contents as soon as the real
+// page is ready, so this clears itself out automatically.
+function renderSkeleton(){
+  const pane = document.createElement('div');
+  pane.className = 'grid-pane';
+  pane.style.flex = '0 0 100%';
+  const inner = document.createElement('div');
+  inner.className = 'grid-inner';
+  const skeletons = [];
+  for (let i = 0; i < PAGE_SIZE; i++){
+    const sk = document.createElement('div');
+    sk.className = 'skeleton-card';
+    skeletons.push(sk);
+  }
+  layoutMasonryColumns(inner, skeletons);
+  pane.appendChild(inner);
+  portfolioGrid.appendChild(pane);
+}
+renderSkeleton();
+
+// Every image URL below is cache-busted with "?v=<mtime>", but the manifest
+// itself never was - a browser that cached an old manifest.json would keep
+// listing files that were since deleted (they'd 404) or miss newly-added
+// ones. Busting with the current load time forces a fresh fetch every time.
+fetch(`assets/img/manifest.json?t=${Date.now()}`)
   .then(res => res.json())
   .then(manifest => {
     CATEGORY_ORDER.forEach(slug => {
-      const files = manifest[slug] || [];
-      files.forEach(filename => {
+      const files = manifest[slug] || {};
+      Object.keys(files).forEach(filename => {
         const figure = document.createElement('figure');
         figure.className = 'card';
         figure.dataset.category = slug;
 
         const img = document.createElement('img');
-        img.src = `assets/img/${slug}/${encodeURIComponent(filename)}`;
+        // "?v=" is the source file's mtime - replacing a file's content
+        // under the same name is a common edit, and without a version tag
+        // the URL never changes, so browsers keep serving what they already
+        // cached for it.
+        const version = files[filename];
+        // The grid only ever needs a few hundred px per card, so it loads
+        // the small pre-compressed copy - the multi-megabyte original is
+        // only fetched when the lightbox opens (see dataset.full).
+        img.dataset.src = `assets/img/thumbs/${slug}/${encodeURIComponent(filename)}?v=${version}`;
+        img.dataset.full = `assets/img/${slug}/${encodeURIComponent(filename)}?v=${version}`;
         img.alt = `${CATEGORY_LABELS[slug]} - ${filename}`;
         figure.appendChild(img);
 
-        const figcaption = document.createElement('figcaption');
-        const cat = document.createElement('span');
-        cat.className = 'card-cat';
-        cat.textContent = CATEGORY_LABELS[slug];
-        figcaption.appendChild(cat);
-        figure.appendChild(figcaption);
-
         allCards.push(figure);
       });
+
+      // Hide a filter pill entirely when its category has no images right
+      // now (e.g. everything in "Other" got removed) - an empty grid with
+      // no cards and no message reads as a broken page, not an empty one.
+      const filterBtn = filterBar.querySelector(`.filter-btn[data-filter="${slug}"]`);
+      if (filterBtn) filterBtn.classList.toggle('hidden', Object.keys(files).length === 0);
     });
 
     renderGrid();
   })
   .catch(err => console.error('Failed to load portfolio manifest:', err));
-
-let resizeTimer;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { currentPage = 0; renderGrid(); }, 200);
-});
 
 // Filter buttons (event delegation - works regardless of how many cards exist)
 filterBar.addEventListener('click', (e) => {
@@ -349,9 +568,25 @@ portfolioGrid.addEventListener('click', (e) => {
   if (card) openLightbox(card);
 });
 lightboxClose.addEventListener('click', closeLightbox);
+lightboxPrev.addEventListener('click', (e) => { e.stopPropagation(); stepLightbox(-1); });
+lightboxNext.addEventListener('click', (e) => { e.stopPropagation(); stepLightbox(1); });
 lightbox.addEventListener('click', (e) => {
   if (e.target === lightbox) closeLightbox();
 });
 document.addEventListener('keydown', (e) => {
+  if (!lightbox.classList.contains('open')) return;
   if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowRight') stepLightbox(1);
+  if (e.key === 'ArrowLeft') stepLightbox(-1);
 });
+
+// ===== Scroll-reveal for major sections =====
+const revealObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting){
+      entry.target.classList.add('in-view');
+      revealObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.15 });
+document.querySelectorAll('.reveal').forEach(el => revealObserver.observe(el));
