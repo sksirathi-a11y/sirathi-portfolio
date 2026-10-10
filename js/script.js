@@ -124,13 +124,20 @@ function stepLightbox(delta){
   showLightboxCard((lightboxIndex + delta + lightboxCards.length) % lightboxCards.length);
 }
 
-// The portfolio grid is a uniform fixed-ratio CSS Grid (see .grid-pane /
-// .card in css/style.css) - every card is the same box regardless of the
-// source image's real aspect ratio (object-fit: cover crops it), so a page
-// is always just "the next PAGE_SIZE cards," known instantly with no image
-// loading needed first. Only one page of cards is in the DOM at a time;
-// prev/next (or a swipe) slides to the next one.
-const PAGE_SIZE = 15;
+// A page is "the next N cards" in the filtered list. Only one page of cards
+// is in the DOM at a time; prev/next (or a swipe) slides to the next one.
+// N is the multiple of the current column count nearest to 15 - 15 itself
+// on 3 or 5 columns, 16 on 2 or 4 - so every full page fills its rows
+// exactly instead of leaving one card hanging off the end. It's fixed when
+// the grid is (re)built (activePageSize) so page boundaries stay put while
+// paging; a resize that changes the column count rebuilds from page 1.
+const TARGET_PAGE_SIZE = 15;
+function pageSizeForColumns(){
+  const cols = masonryMetrics().cols;
+  return Math.max(cols, Math.round(TARGET_PAGE_SIZE / cols) * cols);
+}
+let activePageSize = TARGET_PAGE_SIZE;
+let rebuildAfterTransition = false;
 let allCards = [];
 let currentFilter = 'all';
 let currentPage = 0;
@@ -270,7 +277,7 @@ function buildPageFromIndex(startIndex){
   const visible = getVisibleCards();
   if (startIndex >= visible.length) return Promise.resolve(null);
 
-  const batchEnd = Math.min(startIndex + PAGE_SIZE, visible.length);
+  const batchEnd = Math.min(startIndex + activePageSize, visible.length);
   const batch = visible.slice(startIndex, batchEnd);
 
   const pane = document.createElement('div');
@@ -354,6 +361,7 @@ function updatePagerUI(){
 function renderGrid(){
   currentPage = 0;
   pageStarts = [0];
+  activePageSize = pageSizeForColumns();
   portfolioGrid.classList.toggle('filtered', currentFilter !== 'all');
 
   return buildPageFromIndex(0).then(result => {
@@ -409,6 +417,10 @@ function goToPage(delta){
   const releaseLock = () => {
     pageTransitionInFlight = false;
     updatePagerUI();
+    if (rebuildAfterTransition){
+      rebuildAfterTransition = false;
+      renderGrid();
+    }
   };
 
   buildPageFromIndex(startIndex).then(result => {
@@ -484,7 +496,9 @@ portfolioGrid.addEventListener('touchend', (e) => {
 // Viewport width changes can change how many columns fit - re-deal each
 // .grid-inner currently in the DOM (there are briefly two during a
 // page-slide transition) into a fresh column count, using the same
-// left-to-right order it was built with the first time.
+// left-to-right order it was built with the first time. If the new column
+// count needs a different page size, the pages themselves no longer line up
+// with full rows, so rebuild from page 1 (after any slide in progress ends).
 let resizeRaf = null;
 window.addEventListener('resize', () => {
   if (resizeRaf) return;
@@ -493,6 +507,10 @@ window.addEventListener('resize', () => {
     document.querySelectorAll('.grid-inner').forEach(inner => {
       if (inner.cardOrder) layoutMasonryColumns(inner, inner.cardOrder);
     });
+    if (allCards.length && pageSizeForColumns() !== activePageSize){
+      if (pageTransitionInFlight) rebuildAfterTransition = true;
+      else renderGrid();
+    }
   });
 });
 
@@ -507,7 +525,7 @@ function renderSkeleton(){
   const inner = document.createElement('div');
   inner.className = 'grid-inner';
   const skeletons = [];
-  for (let i = 0; i < PAGE_SIZE; i++){
+  for (let i = 0, n = pageSizeForColumns(); i < n; i++){
     const sk = document.createElement('div');
     sk.className = 'skeleton-card';
     skeletons.push(sk);
