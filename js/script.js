@@ -147,13 +147,33 @@ function getVisibleCards(){
   return allCards.filter(card => currentFilter === 'all' || card.dataset.category === currentFilter);
 }
 
-// Matches the .grid-column width/gap in css/style.css.
 const MASONRY_COLUMN_WIDTH = 208;
 const MASONRY_COLUMN_GAP = 28;
+const MASONRY_MOBILE_GAP = 12;
 
-function masonryColumnCount(){
+// Column count, width and gap for the current viewport. Wide enough for two
+// fixed 208px columns: as many as fit. Narrower (phones): fixed-width
+// columns would only fit one small column with empty space on both sides,
+// so it's always two columns stretched to fill the width, with a tighter gap.
+// The width/gap are handed to CSS as --col-w/--col-gap on .grid-inner.
+function masonryMetrics(){
   const available = gridViewport.clientWidth;
-  return Math.max(1, Math.floor((available + MASONRY_COLUMN_GAP) / (MASONRY_COLUMN_WIDTH + MASONRY_COLUMN_GAP)));
+  const fit = Math.floor((available + MASONRY_COLUMN_GAP) / (MASONRY_COLUMN_WIDTH + MASONRY_COLUMN_GAP));
+  if (fit >= 2) return { cols: fit, width: MASONRY_COLUMN_WIDTH, gap: MASONRY_COLUMN_GAP };
+  return { cols: 2, width: (available - MASONRY_MOBILE_GAP) / 2, gap: MASONRY_MOBILE_GAP };
+}
+
+// Rendered height of a card at the given column width, from its image's real
+// proportions - null until the image has loaded (or if it failed to).
+function cardHeight(card, width){
+  const img = card.querySelector('img');
+  if (!img || !img.complete || !img.naturalWidth) return null;
+  return width * img.naturalHeight / img.naturalWidth;
+}
+
+function relayoutPane(pane){
+  const inner = pane.querySelector('.grid-inner');
+  if (inner && inner.cardOrder) layoutMasonryColumns(inner, inner.cardOrder);
 }
 
 // Builds N `.grid-column` tracks inside a `.grid-columns-row` and deals as
@@ -192,23 +212,12 @@ function masonryColumnCount(){
 // since `cards.length` then divides evenly by `cols`), so the block's own
 // width matches its content and .grid-pane's flex centering centers it
 // exactly.
-// Rendered height of a card at column width, from its image's real
-// proportions - null until the image has loaded (or if it failed to).
-function cardHeight(card){
-  const img = card.querySelector('img');
-  if (!img || !img.complete || !img.naturalWidth) return null;
-  return MASONRY_COLUMN_WIDTH * img.naturalHeight / img.naturalWidth;
-}
-
-function relayoutPane(pane){
-  const inner = pane.querySelector('.grid-inner');
-  if (inner && inner.cardOrder) layoutMasonryColumns(inner, inner.cardOrder);
-}
-
 function layoutMasonryColumns(inner, cards){
-  const idealCols = masonryColumnCount();
+  const { cols: idealCols, width, gap } = masonryMetrics();
   const cols = Math.max(1, Math.min(idealCols, cards.length));
   inner.innerHTML = '';
+  inner.style.setProperty('--col-w', `${width}px`);
+  inner.style.setProperty('--col-gap', `${gap}px`);
 
   const mainCount = Math.floor(cards.length / cols) * cols;
   const mainCards = cards.slice(0, mainCount);
@@ -227,12 +236,12 @@ function layoutMasonryColumns(inner, cards){
   inner.appendChild(columnsRow);
 
   const colHeights = columns.map(col => {
-    const heights = Array.from(col.children).map(cardHeight);
+    const heights = Array.from(col.children).map(card => cardHeight(card, width));
     if (heights.includes(null)) return null;
-    return heights.reduce((a, b) => a + b, 0) + MASONRY_COLUMN_GAP * (heights.length - 1);
+    return heights.reduce((a, b) => a + b, 0) + gap * (heights.length - 1);
   });
   const columnsEven = !colHeights.includes(null) &&
-    Math.max(...colHeights) - Math.min(...colHeights) <= MASONRY_COLUMN_GAP;
+    Math.max(...colHeights) - Math.min(...colHeights) <= gap;
 
   if (tailCards.length && !columnsEven){
     const offset = Math.floor((cols - tailCards.length) / 2);
@@ -249,7 +258,7 @@ function layoutMasonryColumns(inner, cards){
     inner.appendChild(tailRow);
   }
 
-  inner.style.width = `${cols * MASONRY_COLUMN_WIDTH + (cols - 1) * MASONRY_COLUMN_GAP}px`;
+  inner.style.width = `${cols * width + (cols - 1) * gap}px`;
   inner.cardOrder = cards;
 }
 

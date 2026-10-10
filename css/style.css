@@ -504,25 +504,27 @@ section{ padding: 120px 0; position: relative; }
   flex: 0 0 100%;
   min-width: 0;
 }
+/* --col-w / --col-gap are set per pane by js/script.js (masonryMetrics) -
+   fixed 208px/28px on wide screens, two stretched columns on phones. */
 .grid-inner{
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--col-gap, 28px);
 }
 .grid-columns-row{
   display: flex;
-  gap: 28px;
+  gap: var(--col-gap, 28px);
 }
 .grid-tail-row{
   display: flex;
   justify-content: center;
-  gap: 28px;
+  gap: var(--col-gap, 28px);
 }
 .grid-column{
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  width: 208px;
+  gap: var(--col-gap, 28px);
+  width: var(--col-w, 208px);
   flex-shrink: 0;
 }
 .card{
